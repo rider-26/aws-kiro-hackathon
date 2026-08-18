@@ -1,0 +1,31 @@
+# AWS Amplify Hosting build settings for the PeerLink frontend.
+#
+# Amplify looks for this file at the repository root. The React app lives in
+# /frontend, so the build steps change into that directory.
+#
+# Set these environment variables in the Amplify console before the first build.
+# Vite inlines VITE_* at BUILD time, so they must exist when the build runs —
+# adding them afterwards has no effect until you rebuild:
+#   VITE_API_BASE_URL = https://<rest-api-id>.execute-api.<region>.amazonaws.com/api
+#   VITE_WS_URL       = wss://<ws-api-id>.execute-api.<region>.amazonaws.com/production
+#
+# Also add a rewrite rule in the Amplify console so client-side routes survive a
+# refresh: source /<*>  target /index.html  type 200 (Rewrite).
+# Without it, deep links like /tutors/abc123 return 404.
+version: 1
+frontend:
+  phases:
+    preBuild:
+      commands:
+        - cd frontend
+        - npm ci
+    build:
+      commands:
+        - npm run build
+  artifacts:
+    baseDirectory: frontend/dist
+    files:
+      - '**/*'
+  cache:
+    paths:
+      - frontend/node_modules/**/*
