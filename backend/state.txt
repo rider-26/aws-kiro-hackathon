@@ -1,0 +1,8 @@
+﻿.env exists:            True
+db exists:              True
+backend express:        True
+backend nodemon:        True
+backend pkgs:           353
+frontend node_modules:  True
+frontend vite:          False
+frontend pkgs:          4

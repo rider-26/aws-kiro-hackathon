@@ -1,0 +1,13 @@
+﻿vite.cmd: True
+react:    True
+tailwind: True
+pkgs:     330
+--- npm install tail ---
+  run `npm fund` for details
+
+4 vulnerabilities (3 moderate, 1 high)
+
+To address all issues (including breaking changes), run:
+  npm audit fix --force
+
+Run `npm audit` for details.

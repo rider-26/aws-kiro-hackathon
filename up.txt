@@ -1,0 +1,2 @@
+﻿backend  :5000 -> 200 OK
+frontend :5173 -> 200 OK
