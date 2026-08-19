@@ -1,8 +1,15 @@
 import apiClient from './client';
 
+/**
+ * Returns { materials, uploads_enabled, uploads_disabled_reason }.
+ *
+ * `uploads_enabled` reports whether the backend can actually issue a presigned
+ * S3 URL, so the page can present the dropzone honestly rather than accepting a
+ * file and failing afterwards.
+ */
 export async function listMaterials() {
   const res = await apiClient.get('/study-materials');
-  return res.data.data.materials;
+  return res.data.data;
 }
 
 export async function getMaterial(id) {

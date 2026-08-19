@@ -1,7 +1,5 @@
-const { PutObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
-const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
-const s3 = require('../config/s3');
-const env = require('../config/env');
+
+const storageService = require('./storageService');
 const idGen = require('../utils/idGen');
 const studyMaterialRepository = require('../repositories/studyMaterialRepository');
 const moduleRepository = require('../repositories/moduleRepository');
@@ -29,31 +27,61 @@ const PRESIGN_EXPIRY_SECONDS = 300;
  * user id, so a client cannot write into another student's prefix.
  */
 
-async function createUploadUrl(studentId, { filename, content_type, module_id }) {
+/**
+ * Shown only when S3 is the selected driver but unusable. With the default local
+ * driver uploads always work, so this should not normally be reachable.
+ */
+const UPLOAD_UNAVAILABLE_MESSAGE =
+  'Uploading your own file needs cloud storage, which is not available in this environment. '
+  + 'Use the sample material below — it supports the full quiz and diagnosis flow.';
+
+function isCredentialError(err) {
+  const text = `${err?.name || ''} ${err?.message || ''}`;
+  return /credential|CredentialsProviderError|security token|AccessDenied|ExpiredToken/i.test(text);
+}
+
+/** Delegated to the storage driver, which is authoritative about its own state. */
+function uploadsAvailable() {
+  return storageService.uploadsAvailable();
+}
+
+async function createUploadUrl(studentId, { filename, content_type, module_id }, { baseUrl } = {}) {
   if (!filename) throw new ApiError(400, 'filename is required');
   if (content_type && !ALLOWED_CONTENT_TYPES.includes(content_type)) {
     throw new ApiError(400, 'Only PDF, DOCX and PPTX files are supported');
   }
 
+  // Key is derived server-side and embeds the owner, so a client can never
+  // aim an upload at another student's prefix.
   const safeName = filename.replace(/[^\w.\-]/g, '_').slice(-120);
   const key = `study-materials/${studentId}/${Date.now()}_${safeName}`;
 
   let uploadUrl;
   try {
-    uploadUrl = await getSignedUrl(
-      s3,
-      new PutObjectCommand({
-        Bucket: env.s3Bucket,
-        Key: key,
-        ContentType: content_type || 'application/pdf',
-      }),
-      { expiresIn: PRESIGN_EXPIRY_SECONDS }
-    );
+    uploadUrl = await storageService.createUploadUrl({
+      key,
+      contentType: content_type || 'application/pdf',
+      expiresIn: PRESIGN_EXPIRY_SECONDS,
+      baseUrl,
+    });
   } catch (err) {
-    throw new ApiError(503, `Could not prepare the upload: ${err.message}`);
+    // Never surface raw AWS SDK text to a student: "Could not load credentials
+    // from any providers" is unactionable and reads like the app is broken
+    // rather than a feature not being configured.
+    if (isCredentialError(err)) {
+      throw new ApiError(503, UPLOAD_UNAVAILABLE_MESSAGE);
+    }
+    console.warn('[study] could not create an upload URL:', err.message);
+    throw new ApiError(503, 'Could not prepare the upload. Please try again in a moment.');
   }
 
-  return { upload_url: uploadUrl, file_reference: key, expires_in: PRESIGN_EXPIRY_SECONDS, module_id };
+  return {
+    upload_url: uploadUrl,
+    file_reference: key,
+    expires_in: PRESIGN_EXPIRY_SECONDS,
+    module_id,
+    storage: storageService.driver(),
+  };
 }
 
 /** Records the material row after the browser completes its S3 PUT. */
@@ -120,20 +148,58 @@ async function getOwnMaterial(studentId, materialId) {
 }
 
 /** Short-lived download link for the student's own file. */
-async function getDownloadUrl(studentId, materialId) {
+async function getDownloadUrl(studentId, materialId, { baseUrl } = {}) {
+  // Ownership is re-checked here, so a signed URL is only ever issued to the
+  // student the material belongs to (business rule 9).
   const material = await getOwnMaterial(studentId, materialId);
   if (!material.file_reference) {
     throw new ApiError(400, 'This is demo content and has no stored file');
   }
   try {
-    return getSignedUrl(
-      s3,
-      new GetObjectCommand({ Bucket: env.s3Bucket, Key: material.file_reference }),
-      { expiresIn: PRESIGN_EXPIRY_SECONDS }
-    );
+    return storageService.createDownloadUrl({
+      key: material.file_reference,
+      expiresIn: PRESIGN_EXPIRY_SECONDS,
+      baseUrl,
+    });
   } catch (err) {
-    throw new ApiError(503, `Could not prepare the download: ${err.message}`);
+    if (isCredentialError(err)) throw new ApiError(503, UPLOAD_UNAVAILABLE_MESSAGE);
+    console.warn('[study] could not create a download URL:', err.message);
+    throw new ApiError(503, 'Could not prepare the download. Please try again in a moment.');
   }
+}
+
+/**
+ * Serves or accepts a locally stored object for a signed URL.
+ *
+ * Authority comes entirely from the HMAC signature in the URL, because the
+ * browser PUTs the file with no Authorization header — see the security note in
+ * storageService. The signed key embeds the owning student, so a valid signature
+ * is proof this server issued that exact key for that student.
+ */
+async function putSignedBlob({ key, expires, signature, body, contentType }) {
+  if (storageService.driver() !== 'local') {
+    throw new ApiError(404, 'Not found');
+  }
+  storageService.verifySignedKey(key, expires, signature);
+
+  if (!body || !body.length) throw new ApiError(400, 'No file content received');
+  if (contentType && !ALLOWED_CONTENT_TYPES.includes(contentType)) {
+    throw new ApiError(400, 'Only PDF, DOCX and PPTX files are supported');
+  }
+
+  return storageService.putLocalObject(key, body);
+}
+
+async function resolveSignedBlobPath({ key, expires, signature }) {
+  if (storageService.driver() !== 'local') {
+    throw new ApiError(404, 'Not found');
+  }
+  storageService.verifySignedKey(key, expires, signature);
+
+  if (!(await storageService.localObjectExists(key))) {
+    throw new ApiError(404, 'That file is no longer stored');
+  }
+  return storageService.localObjectPath(key);
 }
 
 /**
@@ -170,12 +236,16 @@ async function getGeneratedResource(studentId, materialId, kind) {
 }
 
 module.exports = {
+  uploadsAvailable,
+  UPLOAD_UNAVAILABLE_MESSAGE,
   createUploadUrl,
   registerMaterial,
   ensureSampleMaterial,
   listOwnMaterials,
   getOwnMaterial,
   getDownloadUrl,
+  putSignedBlob,
+  resolveSignedBlobPath,
   getGeneratedResource,
   RESOURCE_KINDS,
   ALLOWED_CONTENT_TYPES,

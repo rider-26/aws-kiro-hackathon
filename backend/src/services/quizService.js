@@ -4,8 +4,10 @@ const quizQuestionRepository = require('../repositories/quizQuestionRepository')
 const quizAttemptRepository = require('../repositories/quizAttemptRepository');
 const quizResponseRepository = require('../repositories/quizResponseRepository');
 const moduleRepository = require('../repositories/moduleRepository');
+const studyMaterialRepository = require('../repositories/studyMaterialRepository');
 const studyService = require('./studyService');
 const deepseekService = require('./deepseekService');
+const documentTextService = require('./documentTextService');
 const diagnosisService = require('./diagnosisService');
 const { SAMPLE_MATERIAL } = require('../content/topic05Content');
 const { ApiError } = require('../middleware/errorHandler');
@@ -54,14 +56,36 @@ async function generateQuiz(studentId, { study_material_id, question_count }) {
   const count = Math.min(Math.max(Number(question_count) || DEFAULT_QUESTION_COUNT, 4), 15);
 
   const moduleRecord = material.module_id ? await moduleRepository.getById(material.module_id) : null;
-  const topics = material.topics && material.topics.length ? material.topics : SAMPLE_MATERIAL.topics;
 
-  const { questions, source, fallback_reason } = await deepseekService.generateQuestions({
-    moduleCode: moduleRecord?.module_code || 'IT2513',
+  /**
+   * Read the actual file so the model can base questions on its contents.
+   *
+   * This is the difference between "AI-generated from your material" being true
+   * and being a claim the app could not back up: previously only the FILENAME
+   * and a topic list were sent, and for any upload that topic list fell back to
+   * the bundled cryptography sample — so an economics deck produced questions
+   * about password hashing.
+   */
+  const extracted = await documentTextService.extractFromMaterial(material);
+
+  /**
+   * Topics are only supplied when we genuinely know them: the bundled sample has
+   * a curated list. For a real upload we deliberately send NO topic list, so the
+   * model derives topics from the document instead of being pushed toward
+   * someone else's syllabus.
+   */
+  const knownTopics = material.topics && material.topics.length
+    ? material.topics
+    : (material.is_sample ? SAMPLE_MATERIAL.topics : null);
+
+  const { questions, source, grounded, fallback_reason } = await deepseekService.generateQuestions({
+    // Only assert a module code when the material is actually linked to one.
+    moduleCode: moduleRecord?.module_code || null,
     materialName: material.filename,
-    topics,
+    topics: extracted ? null : knownTopics,
     questionCount: count,
-    pageCount: material.page_count || SAMPLE_MATERIAL.page_count,
+    pageCount: extracted?.pageCount || material.page_count || null,
+    documentText: extracted?.text || null,
   });
 
   const quiz = await quizRepository.create({
@@ -72,9 +96,29 @@ async function generateQuiz(studentId, { study_material_id, question_count }) {
     title: `${moduleRecord?.module_code || 'Quiz'} — ${material.filename.replace(/\.[^.]+$/, '')}`,
     question_count: questions.length,
     source, // 'deepseek' | 'fallback' — surfaced in the UI, never hidden
+    // Whether the model actually read the file. "From your material" and
+    // "about topics we could name" are different claims, so the UI says which.
+    grounded: !!grounded,
     fallback_reason: fallback_reason || null,
     created_date: new Date().toISOString(),
   });
+
+  // Cache what reading the file taught us, so later quizzes and the material
+  // list show real topics and a real page count instead of placeholders.
+  if (extracted && !material.is_sample) {
+    const derivedTopics = [...new Set(questions.map((q) => q.topic).filter(Boolean))];
+    const patch = {};
+    if (derivedTopics.length && !(material.topics || []).length) patch.topics = derivedTopics;
+    if (extracted.pageCount && !material.page_count) patch.page_count = extracted.pageCount;
+    if (Object.keys(patch).length) {
+      try {
+        await studyMaterialRepository.update(material.id, patch);
+      } catch (err) {
+        // Cosmetic enrichment only — never fail a generated quiz over it.
+        console.warn('[quiz] could not cache derived material metadata:', err.message);
+      }
+    }
+  }
 
   const stored = await Promise.all(
     questions.map((q, index) =>

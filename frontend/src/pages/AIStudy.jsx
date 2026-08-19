@@ -32,13 +32,20 @@ export default function AIStudy() {
   const [actionError, setActionError] = useState('');
   const [resource, setResource] = useState(null);
   const [resourceLoading, setResourceLoading] = useState('');
+  // Whether the backend can issue a presigned S3 URL at all. Defaults to true
+  // so the control isn't disabled while the first request is still in flight.
+  const [uploadsEnabled, setUploadsEnabled] = useState(true);
+  const [uploadsDisabledReason, setUploadsDisabledReason] = useState('');
 
   async function load() {
     setLoading(true);
     setError(false);
     try {
-      const [mats, qs] = await Promise.all([listMaterials(), listQuizzes()]);
+      const [materialData, qs] = await Promise.all([listMaterials(), listQuizzes()]);
+      const mats = materialData.materials;
       setMaterials(mats);
+      setUploadsEnabled(materialData.uploads_enabled !== false);
+      setUploadsDisabledReason(materialData.uploads_disabled_reason || '');
       setQuizzes(qs);
       setSelectedId((prev) => prev || mats[0]?.id || null);
     } catch {
@@ -125,13 +132,27 @@ export default function AIStudy() {
         <p className="text-sm font-semibold text-slate-700">Upload Study Material</p>
         <p className="text-xs text-slate-400 mt-1">PDF, DOCX or PPTX. Your materials are private to you.</p>
         <div className="mt-4 flex flex-wrap items-center justify-center gap-3">
-          <button onClick={() => fileInputRef.current?.click()} disabled={uploading} className="btn-secondary">
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={uploading || !uploadsEnabled}
+            title={uploadsEnabled ? undefined : uploadsDisabledReason}
+            className="btn-secondary"
+          >
             {uploading ? <Loader2 size={15} className="animate-spin" /> : <Upload size={15} />}
             {uploading ? 'Uploading…' : 'Choose file'}
           </button>
           <span className="text-xs text-slate-400">or use the sample material below</span>
         </div>
         <input ref={fileInputRef} type="file" accept=".pdf,.docx,.pptx" onChange={handleUpload} className="hidden" />
+
+        {/* Stated up front rather than after a file is chosen. Amber, not red:
+            nothing has gone wrong — a feature simply isn't configured here, and
+            the sample material covers the whole demo path. */}
+        {!uploadsEnabled && (
+          <p className="mx-auto mt-3 max-w-md rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+            {uploadsDisabledReason}
+          </p>
+        )}
         {uploadError && <p className="mt-3 text-xs text-red-600">{uploadError}</p>}
       </div>
 

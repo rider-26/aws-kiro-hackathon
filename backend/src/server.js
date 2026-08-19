@@ -1,6 +1,7 @@
 const http = require('http');
 const app = require('./app');
 const env = require('./config/env');
+const secrets = require('./config/secrets');
 const localHub = require('./realtime/localHub');
 
 /**
@@ -32,6 +33,22 @@ server.listen(env.port, () => {
   // NODE_ENV=production in the shell silently narrows what the browser may use.
   console.log(`Mode: ${env.nodeEnv}`);
   console.log(`CORS allowed origins: ${env.allowedOrigins.join(', ')}`);
+
+  // File storage for uploaded study material.
+  console.log(
+    env.storageDriver === 'local'
+      ? `Uploads: local disk (${env.uploadsPath})`
+      : `Uploads: s3 (${env.s3Bucket})`
+  );
+
+  // Reports WHETHER a key is loaded and WHERE from — never the value itself.
+  // Without this, "is the AI live or falling back?" needs a quiz to answer.
+  const deepseek = secrets.resolve('DEEPSEEK_API_KEY');
+  if (deepseek.value) {
+    console.log(`DeepSeek: ${secrets.fingerprint(deepseek.value)} from ${deepseek.source}`);
+  } else {
+    console.log('DeepSeek: no key — quizzes will use the seeded question bank');
+  }
 
   if (env.dbDriver === 'sqlite') {
     console.log(`Storage: sqlite (${env.sqlitePath})`);

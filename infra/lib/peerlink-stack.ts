@@ -48,18 +48,17 @@ const TABLE_ENV_VARS: Record<string, string> = {
 /**
  * What never belongs in the Lambda bundle.
  *
- * `better-sqlite3` matters most: it's a NATIVE module compiled for the machine
- * that ran `npm install`, so a Windows/macOS build shipped to Amazon Linux
- * would be unloadable. Nothing requires it when DB_DRIVER=dynamodb (the sqlite
- * adapter is only required lazily from baseRepository when that driver is
- * selected), so excluding it is safe — and it keeps the bundle smaller. The
- * local database file and .env are excluded so no local data or secret is ever
- * uploaded.
+ * `.env` and the local `data/` database are the important ones — neither a
+ * secret nor local demo data should ever be uploaded. Tests, scripts and
+ * coverage are excluded purely to keep the artifact small.
+ *
+ * Worth noting there is NO native module to worry about here: the SQLite driver
+ * uses Node's built-in `node:sqlite`, so nothing is compiled per-platform and
+ * nothing could arrive built for the wrong OS. That was a real hazard while the
+ * driver depended on `better-sqlite3`.
  */
 const LAMBDA_BUNDLE_EXCLUDES = [
   'node_modules/.cache',
-  'node_modules/better-sqlite3',
-  'node_modules/prebuild-install',
   'node_modules/.bin',
   'tests',
   'scripts',
@@ -119,6 +118,10 @@ export class PeerLinkStack extends cdk.Stack {
         // SQLite driver for local development, and this is what guarantees the
         // deployed function talks to DynamoDB.
         DB_DRIVER: 'dynamodb',
+        // Lambda's filesystem is ephemeral and not shared between invocations,
+        // so the local disk driver would lose every upload. S3 is the only
+        // correct choice here.
+        STORAGE_DRIVER: 's3',
         JWT_SECRET: requireEnv('JWT_SECRET'),
         JWT_EXPIRES_IN: '7d',
         S3_BUCKET: bucketName,

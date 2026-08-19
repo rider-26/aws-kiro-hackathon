@@ -17,7 +17,7 @@ AI-assisted peer tutoring platform for NYP students. Connects tutees who need ac
 
 ## Getting started (local dev)
 
-Runs with **no AWS account, credentials, Docker or Java** — the default driver is a local SQLite file.
+Runs with **no AWS account, credentials, Docker, Java or C++ build tools**. The local driver uses Node's built-in `node:sqlite`, so there is nothing to compile — you need only Node 22.5 or newer.
 
 ```powershell
 # Backend
@@ -42,19 +42,45 @@ Then sign in at http://localhost:5173 with any account below.
 | `npm run seed` | Seeds demo data (idempotent — safe to re-run) |
 | `npm run seed:reset` | Wipes the local database first, then seeds. SQLite only |
 | `npm run db:stats` | Row counts per table, to confirm what's populated |
+| `npm run db:users` | Lists accounts with role and status |
+| `npm run secret:set <NAME>` | Stores a secret outside the repo, in `~/.peerlink/secrets.env` |
+| `npm run secret:list` | Shows which secrets are loaded and from where — never the values |
+| `npm run hooks:install` | Installs the git pre-commit hook that blocks committing credentials |
 | `npm run smoke:api` | 37 live checks against a running backend (real data layer, no mocks) |
 | `npm run smoke:ws` | 7 live WebSocket checks (notifications + chat broadcast) |
 | `npm run smoke:deepseek` | Verifies the live DeepSeek call. Needs `DEEPSEEK_API_KEY` |
 | `npm test` | 462 unit/integration tests |
 
-### What needs real AWS, and what doesn't
+### Where the AI key goes
 
-Only two features touch AWS, and both degrade gracefully:
+Store it **outside the repository**, so it cannot be committed by accident and does not travel when the project folder is zipped or copied:
 
-- **Uploading your own study material** needs an S3 bucket. Without it the bundled sample material still works, so AI quiz generation, weak-topic diagnosis, tutor matching, booking, attendance, reviews and the retest/improvement loop all run end to end.
-- **Real-time push when deployed** uses API Gateway WebSockets. Locally an in-process WebSocket hub covers it, so live chat and notifications work as-is.
+```powershell
+cd backend
+npm run secret:set DEEPSEEK_API_KEY   # prompts, writes to ~/.peerlink/secrets.env
+npm run secret:list                   # confirms what's loaded, never prints values
+```
 
-Leaving `DEEPSEEK_API_KEY` blank is also fine: quizzes fall back to a seeded 10-question IT2513 bank and are tagged as such in the UI.
+Resolution order is `process.env` → `~/.peerlink/secrets.env` → `backend/.env`, so the shell wins for CI and Lambda, and the home file wins locally. The backend prints which source it used on startup (and a fingerprint, never the key).
+
+Also run this once per clone:
+
+```powershell
+cd backend && npm run hooks:install
+```
+
+That installs a git pre-commit hook which blocks any commit containing an API key, AWS credential or private key. Worth doing because it guards the one mistake that can't be undone — a secret in git history has to be scrubbed *and* rotated.
+
+Leaving the key unset is fine: quizzes fall back to a seeded 10-question IT2513 bank and are labelled as such in the UI.
+
+### What needs real AWS
+
+Almost nothing, now. Both AWS-backed features have local equivalents:
+
+- **Uploading study material** uses local disk by default (`STORAGE_DRIVER=local`), with signed URLs mirroring S3's presigned model so the client code is identical either way. Deployment sets `STORAGE_DRIVER=s3`, because Lambda's filesystem is ephemeral.
+- **Real-time push** uses an in-process WebSocket hub locally and API Gateway WebSockets when deployed.
+
+So the full loop — study, AI quiz, weak-topic diagnosis, tutor match, book, attend, review, retest, measure improvement — runs end to end with no AWS account.
 
 ### Switching to DynamoDB
 

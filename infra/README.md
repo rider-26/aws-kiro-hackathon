@@ -114,8 +114,8 @@ CDK prints two outputs:
 ### What the stack sets for you
 
 - `DB_DRIVER=dynamodb` is set explicitly on both functions. The backend also ships a SQLite driver for local dev, and this is what guarantees the deployed code talks to DynamoDB rather than a filesystem that doesn't persist between invocations.
-- `better-sqlite3` is **excluded from the bundle**. It's a native module compiled for whichever machine ran `npm install`, so a Windows or macOS build shipped to Amazon Linux would be unloadable. Nothing requires it on the DynamoDB path (the SQLite adapter is only required lazily when that driver is selected), so excluding it is safe and keeps the bundle smaller.
-- `.env`, the local `data/` database, `tests/` and `scripts/` are excluded, so no local data or secret is ever uploaded.
+- `.env`, the local `data/` database, `tests/` and `scripts/` are excluded from the bundle, so no local data or secret is ever uploaded.
+- There is **no native module** in the bundle. The SQLite driver uses Node's built-in `node:sqlite`, so nothing compiles per-platform and nothing can arrive built for the wrong OS.
 - CORS is scoped to `FRONTEND_ORIGIN` when set. If it isn't, the API accepts any origin and the synth emits a warning. Narrow it once your frontend URL is known.
 
 ### Security note on secrets

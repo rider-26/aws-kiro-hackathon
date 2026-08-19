@@ -1,3 +1,8 @@
+// Required BEFORE dotenv on purpose: secrets.js snapshots which variables were
+// genuinely exported in the shell, so it can tell those apart from ones dotenv
+// copies out of backend/.env. Without that snapshot the two are identical.
+const secrets = require('./secrets');
+
 require('dotenv').config();
 
 function required(name, fallback = undefined) {
@@ -47,6 +52,12 @@ function resolveAllowedOrigins() {
   return [...new Set([...configured, ...LOCAL_DEV_ORIGINS])];
 }
 
+function resolveDeepseekKey() {
+  if ((process.env.NODE_ENV || 'development') === 'test') return undefined;
+  // Prefers ~/.peerlink/secrets.env over backend/.env — see config/secrets.js.
+  return secrets.get('DEEPSEEK_API_KEY');
+}
+
 function resolveDbDriver() {
   if ((process.env.NODE_ENV || 'development') === 'test') return 'dynamodb';
   const driver = (process.env.DB_DRIVER || 'dynamodb').toLowerCase();
@@ -65,6 +76,16 @@ module.exports = {
   dbDriver: resolveDbDriver(),
   // Resolved relative to /backend so the path doesn't depend on cwd.
   sqlitePath: process.env.SQLITE_PATH || path.join(__dirname, '..', '..', 'data', 'peerlink.db'),
+
+  /**
+   * Where uploaded study material goes.
+   *   local — disk, under uploadsPath. No AWS needed; the default.
+   *   s3    — presigned PUT/GET against S3. Set by the CDK stack on deploy.
+   * Lambda's filesystem is ephemeral and not shared between invocations, so
+   * 'local' is never correct for the deployed app.
+   */
+  storageDriver: (process.env.STORAGE_DRIVER || 'local').toLowerCase() === 's3' ? 's3' : 'local',
+  uploadsPath: process.env.UPLOADS_PATH || path.join(__dirname, '..', '..', 'data', 'uploads'),
 
   aws: {
     region: process.env.AWS_REGION || 'ap-southeast-1',
@@ -103,7 +124,14 @@ module.exports = {
   s3Bucket: process.env.S3_BUCKET || 'peerlink-nyp-uploads',
 
   deepseek: {
-    apiKey: process.env.DEEPSEEK_API_KEY,
+    // Withheld under test so the suite can NEVER make a live API call.
+    //
+    // config/env.js loads .env, so once a real key is present locally the tests
+    // would otherwise reach the network: slow, flaky, billable, and it silently
+    // invalidates the tests that assert the seeded-fallback path. Live
+    // verification is the job of `npm run smoke:deepseek`, which runs against a
+    // started server and deliberately fails if the key is absent.
+    apiKey: resolveDeepseekKey(),
     apiUrl: process.env.DEEPSEEK_API_URL || 'https://api.deepseek.com/chat/completions',
     model: process.env.DEEPSEEK_MODEL || 'deepseek-chat',
   },

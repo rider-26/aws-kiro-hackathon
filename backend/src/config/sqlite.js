@@ -1,11 +1,45 @@
+/**
+ * Silence ONLY node:sqlite's "experimental feature" notice.
+ *
+ * Installed BEFORE requiring node:sqlite, because the warning is emitted as the
+ * module loads. It goes to stderr, which makes every script run look like it
+ * failed under PowerShell (any stderr output surfaces as a NativeCommandError)
+ * and muddies CI logs. The warning says nothing beyond what is documented below,
+ * and this filter is deliberately narrow — every other Node warning still comes
+ * through, including future deprecations.
+ */
+const originalEmitWarning = process.emitWarning;
+process.emitWarning = (warning, ...rest) => {
+  const text = typeof warning === 'string' ? warning : warning?.message || '';
+  if (/SQLite is an experimental feature/i.test(text)) return undefined;
+  return originalEmitWarning.call(process, warning, ...rest);
+};
+
 const fs = require('fs');
 const path = require('path');
-const Database = require('better-sqlite3');
+// eslint-disable-next-line import/order
+const { DatabaseSync } = require('node:sqlite');
 const env = require('./env');
 const { ALL_TABLES, indexesFor } = require('./indexes');
 
 /**
  * SQLite connection for local development (DB_DRIVER=sqlite).
+ *
+ * Uses Node's BUILT-IN `node:sqlite` rather than the `better-sqlite3` package.
+ * That is a deliberate choice: better-sqlite3 is a native addon, so it needs
+ * either a prebuilt binary matching your exact Node version and platform or a
+ * working C++ toolchain to compile one. On a machine without Visual Studio
+ * build tools that install simply fails, which makes "clone and run" unreliable
+ * — the exact problem this driver exists to solve. `node:sqlite` ships with Node
+ * (22.5+), so there is nothing to compile, nothing to download, and no native
+ * binary that could end up in a Lambda bundle built for the wrong OS.
+ *
+ * The tradeoff: `node:sqlite` is still flagged experimental, so Node prints a
+ * warning on first use and the API could shift in a future release. Acceptable
+ * for a local development driver, and strictly better than a dependency that
+ * will not install at all. The API surface used here (exec / prepare / get /
+ * all / run / close) is the same shape better-sqlite3 offers, so swapping back
+ * later would be a change to this file alone.
  *
  * SCHEMA DESIGN — deliberately document-oriented rather than one column per
  * field. Every table is:
@@ -68,11 +102,12 @@ function getDb() {
   const dir = path.dirname(env.sqlitePath);
   fs.mkdirSync(dir, { recursive: true });
 
-  db = new Database(env.sqlitePath);
+  db = new DatabaseSync(env.sqlitePath);
   // WAL gives concurrent reads while the seed script writes, and the busy
   // timeout stops a parallel request erroring out on a momentary write lock.
-  db.pragma('journal_mode = WAL');
-  db.pragma('busy_timeout = 5000');
+  // Issued as SQL because node:sqlite has no dedicated pragma() helper.
+  db.exec('PRAGMA journal_mode = WAL');
+  db.exec('PRAGMA busy_timeout = 5000');
 
   createSchema(db);
   return db;
